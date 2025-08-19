@@ -27,19 +27,19 @@ class LatestVersionRequiredException(AwsServiceAvailabilityException):
             message = f"Sorry, the {service_name} service is not supported by this version of LocalStack, but is available if you upgrade to the latest stable version."
             error_code = 2
         else:
-            message = f"Sorry, the {operation_name} operation on the {service_name} service is not currently supported by LocalStack. Please refer to {_DOCS_COVERAGE_URL} for more details."
+            message = f"Sorry, the {operation_name} operation on the {service_name} service is not supported by this version of LocalStack, but is available if you upgrade to the latest stable version."
             error_code = 6
         super().__init__(message, error_code)
 
 
 class LicenseUpgradeRequiredException(AwsServiceAvailabilityException):
     def __init__(self, service_name: str, operation_name: str | None = None):
-        if operation_name:
-            message = f"Sorry, the {operation_name} operation on the {service_name} service is not supported with your LocalStack license. Please refer to {_DOCS_COVERAGE_URL} for more details."
-            error_code = 5
-        else:
+        if operation_name is None:
             message = f"Sorry, the {service_name} service is not included within your LocalStack license, but is available in an upgraded license. Please refer to {_DOCS_COVERAGE_URL} for more details."
             error_code = 1
+        else:
+            message = f"Sorry, the {operation_name} operation on the {service_name} service is not supported with your LocalStack license. Please refer to {_DOCS_COVERAGE_URL} for more details."
+            error_code = 5
         super().__init__(message, error_code)
 
 
@@ -55,7 +55,7 @@ def map_catalog_availability_to_exception(
             AwsServicesSupportInLatest.SUPPORTED_WITH_LICENSE_UPGRADE
             | AwsServiceOperationsSupportInLatest.SUPPORTED_WITH_LICENSE_UPGRADE
         ):
-            return LicenseUpgradeRequiredException(service_name)
+            return LicenseUpgradeRequiredException(service_name, operation_name)
         case AwsServicesSupportInLatest.NOT_SUPPORTED:
             return ServiceNotSupportedException(service_name)
         case _:

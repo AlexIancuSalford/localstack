@@ -12,7 +12,7 @@ from localstack.aws.api import (
     ServiceException,
 )
 from localstack.aws.api.core import ServiceRequest, ServiceRequestHandler, ServiceResponse
-from localstack.aws.availability_exceptions import map_catalog_availability_to_exception
+from localstack.aws.catalog_exceptions import map_catalog_availability_to_exception
 from localstack.aws.protocol.parser import create_parser
 from localstack.aws.protocol.serializer import ResponseSerializer, create_serializer
 from localstack.aws.spec import load_service

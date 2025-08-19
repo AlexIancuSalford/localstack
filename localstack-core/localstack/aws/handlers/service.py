@@ -14,7 +14,7 @@ from ...utils.catalog.aws_catalog import AwsServicesCatalog
 from ...utils.coverage_docs import get_coverage_link_for_service
 from ..api import CommonServiceException, RequestContext, ServiceException
 from ..api.core import ServiceOperation
-from ..availability_exceptions import map_catalog_availability_to_exception
+from ..catalog_exceptions import map_catalog_availability_to_exception
 from ..chain import CompositeResponseHandler, ExceptionHandler, Handler, HandlerChain
 from ..client import parse_response, parse_service_exception
 from ..protocol.parser import RequestParser, create_parser

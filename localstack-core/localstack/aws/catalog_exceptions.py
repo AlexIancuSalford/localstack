@@ -46,7 +46,7 @@ class LicenseUpgradeRequiredException(AwsServiceAvailabilityException):
 def map_catalog_availability_to_exception(
     service_name: str,
     operation_name: str | None,
-    support_status: AwsServicesSupportInLatest | AwsServiceOperationsSupportInLatest,
+    support_status: AwsServicesSupportInLatest | AwsServiceOperationsSupportInLatest | None,
 ) -> AwsServiceAvailabilityException:
     match support_status:
         case AwsServicesSupportInLatest.SUPPORTED | AwsServiceOperationsSupportInLatest.SUPPORTED:

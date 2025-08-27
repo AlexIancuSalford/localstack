@@ -10,7 +10,7 @@ from botocore.model import OperationModel, ServiceModel
 from localstack import config
 from localstack.http import Response
 
-from ...utils.catalog.aws_catalog import AwsServicesCatalog
+from ...utils.catalog.manager import get_aws_services_catalog
 from ...utils.coverage_docs import get_coverage_link_for_service
 from ..api import CommonServiceException, RequestContext, ServiceException
 from ..api.core import ServiceOperation
@@ -183,7 +183,7 @@ class ServiceExceptionSerializer(ExceptionHandler):
                 )
                 error = CommonServiceException("InternalFailure", message, status_code=501)
             else:
-                support_in_latest = AwsServicesCatalog.get().get_support_status(
+                support_in_latest = get_aws_services_catalog().get_support_status(
                     service_name, action_name
                 )
                 error = map_catalog_availability_to_exception(

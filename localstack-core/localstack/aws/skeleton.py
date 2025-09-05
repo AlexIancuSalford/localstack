@@ -18,7 +18,7 @@ from localstack.aws.protocol.serializer import ResponseSerializer, create_serial
 from localstack.aws.spec import load_service
 from localstack.http import Response
 from localstack.utils import analytics
-from localstack.utils.catalog.manager import get_aws_services_catalog
+from localstack.utils.catalog.plugins import get_aws_catalog
 
 LOG = logging.getLogger(__name__)
 
@@ -222,9 +222,7 @@ class Skeleton:
                 "services_notimplemented", payload={"s": service_name, "a": action_name}
             )
         else:
-            support_in_latest = get_aws_services_catalog().get_support_status(
-                service_name, action_name
-            )
+            support_in_latest = get_aws_catalog().get_aws_service_status(service_name, action_name)
             error = map_catalog_availability_to_exception(
                 service_name, action_name, support_in_latest
             )

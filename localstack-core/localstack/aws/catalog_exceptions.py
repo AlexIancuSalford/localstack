@@ -2,6 +2,7 @@ from localstack.aws.api import CommonServiceException
 from localstack.utils.catalog.common import (
     AwsServiceOperationsSupportInLatest,
     AwsServicesSupportInLatest,
+    AwsServiceSupportAtRuntime,
 )
 
 _DOCS_COVERAGE_URL = "https://docs.localstack.cloud/references/coverage"
@@ -54,9 +55,10 @@ def map_catalog_availability_to_exception(
         case (
             AwsServicesSupportInLatest.SUPPORTED_WITH_LICENSE_UPGRADE
             | AwsServiceOperationsSupportInLatest.SUPPORTED_WITH_LICENSE_UPGRADE
+            | AwsServiceSupportAtRuntime.AVAILABLE_WITH_LICENSE_UPGRADE
         ):
             return LicenseUpgradeRequiredException(service_name, operation_name)
-        case AwsServicesSupportInLatest.NOT_SUPPORTED:
+        case AwsServicesSupportInLatest.NOT_SUPPORTED | AwsServiceSupportAtRuntime.NOT_IMPLEMENTED:
             return ServiceNotSupportedException(service_name)
         case _:
             return AwsServiceAvailabilityException(

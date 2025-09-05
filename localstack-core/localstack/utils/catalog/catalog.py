@@ -4,7 +4,9 @@ from enum import StrEnum
 
 from plux import Plugin
 
-from localstack.services.cloudformation.resource_provider import plugin_manager
+from localstack.services.cloudformation.resource_provider import (
+    plugin_manager as cfn_plugin_manager,
+)
 from localstack.utils.catalog.common import (
     AwsServiceOperationsSupportInLatest,
     AwsServicesSupportInLatest,
@@ -34,6 +36,19 @@ class LocalstackEmulatorType(StrEnum):
 class CatalogPlugin(Plugin):
     namespace = "localstack.utils.catalog"
 
+    @staticmethod
+    def get_cfn_resources_catalog(cloudformation_resources: dict):
+        cfn_resources_catalog = {}
+        for emulator_type in list(LocalstackEmulatorType):
+            if emulator_type in cloudformation_resources:
+                for resource_name in cloudformation_resources[emulator_type].keys():
+                    cfn_resources_catalog[emulator_type] = {
+                        resource_name: set(
+                            cloudformation_resources[emulator_type][resource_name]["methods"]
+                        )
+                    }
+        return cfn_resources_catalog
+
     @abstractmethod
     def get_aws_service_status(
         self, service_name: str, operation_name: str | None = None
@@ -52,10 +67,19 @@ class AwsCatalogPlugin(CatalogPlugin):
     current_emulator_type: LocalstackEmulatorType = LocalstackEmulatorType.COMMUNITY
     services_in_latest: dict[ServiceName, dict[LocalstackEmulatorType, ServiceOperations]] = {}
     services_at_runtime: set[ServiceName] = set()
-    cfn_resources_at_runtime: set[CfnResourceName] = set()
-    cfn_resources_catalog: dict[
+    cfn_resources_in_latest: dict[
         LocalstackEmulatorType, dict[CfnResourceName, set[CfnResourceMethodName]]
     ] = {}
+    cfn_resources_at_runtime: set[CfnResourceName] = set()
+
+    @staticmethod
+    def get_aws_services_at_runtime():
+        from localstack.services.plugins import SERVICE_PLUGINS
+
+        return {
+            provider_name.split(".")[0]
+            for provider_name in SERVICE_PLUGINS.plugin_manager.list_names()
+        }
 
     def __init__(self, remote_catalog_loader: RemoteCatalogLoader | None = None) -> None:
         catalog_loader = remote_catalog_loader or RemoteCatalogLoader()
@@ -68,23 +92,11 @@ class AwsCatalogPlugin(CatalogPlugin):
                     operations = service_provider.get("operations") or set()
                     self.services_in_latest.setdefault(service_name, {})[emulator_type] = operations
 
-        for emulator_type in list(LocalstackEmulatorType):
-            if emulator_type in remote_catalog.cloudformation_resources:
-                for resource_name in remote_catalog.cloudformation_resources[emulator_type].keys():
-                    self.cfn_resources_catalog[emulator_type] = {
-                        resource_name: set(
-                            remote_catalog.cloudformation_resources[emulator_type][resource_name][
-                                "methods"
-                            ]
-                        )
-                    }
-        self.cfn_resources_at_runtime = set(plugin_manager.list_names())
-        from localstack.services.plugins import SERVICE_PLUGINS
-
-        self.services_at_runtime = {
-            provider_name.split(".")[0]
-            for provider_name in SERVICE_PLUGINS.plugin_manager.list_names()
-        }
+        self.cfn_resources_in_latest = AwsCatalogPlugin.get_cfn_resources_catalog(
+            remote_catalog.cloudformation_resources
+        )
+        self.cfn_resources_at_runtime = set(cfn_plugin_manager.list_names())
+        self.services_at_runtime = AwsCatalogPlugin.get_aws_services_at_runtime()
 
     def get_aws_service_status(
         self, service_name: str, operation_name: str | None = None
@@ -117,7 +129,7 @@ class AwsCatalogPlugin(CatalogPlugin):
             return None
         if service_name in self.services_at_runtime:
             for emulator_type in list(LocalstackEmulatorType):
-                if resource_name in self.cfn_resources_catalog[emulator_type]:
+                if resource_name in self.cfn_resources_in_latest[emulator_type]:
                     if emulator_type is self.current_emulator_type:
                         return CloudFormationResourcesSupportInLatest.SUPPORTED
                     else:

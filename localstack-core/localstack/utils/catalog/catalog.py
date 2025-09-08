@@ -63,7 +63,7 @@ class CatalogPlugin(Plugin):
 
 
 class AwsCatalogPlugin(CatalogPlugin):
-    name = "aws_catalog"
+    name = "aws-catalog"
     current_emulator_type: LocalstackEmulatorType = LocalstackEmulatorType.COMMUNITY
     services_in_latest: dict[ServiceName, dict[LocalstackEmulatorType, ServiceOperations]] = {}
     services_at_runtime: set[ServiceName] = set()

@@ -41,7 +41,7 @@ class CatalogPlugin(Plugin):
         cfn_resources_catalog = {}
         for emulator_type in list(LocalstackEmulatorType):
             if emulator_type in cloudformation_resources:
-                for resource_name in cloudformation_resources[emulator_type].keys():
+                for resource_name in cloudformation_resources[emulator_type]:
                     cfn_resources_catalog[emulator_type] = {
                         resource_name: set(
                             cloudformation_resources[emulator_type][resource_name]["methods"]
@@ -84,7 +84,7 @@ class AwsCatalogPlugin(CatalogPlugin):
     def __init__(self, remote_catalog_loader: RemoteCatalogLoader | None = None) -> None:
         catalog_loader = remote_catalog_loader or RemoteCatalogLoader()
         remote_catalog = catalog_loader.get_remote_catalog()
-        for service_name in remote_catalog.services.keys():
+        for service_name in remote_catalog.services:
             service = remote_catalog.services[service_name]
             for emulator_type in list(LocalstackEmulatorType):
                 if emulator_type in service:
@@ -111,7 +111,7 @@ class AwsCatalogPlugin(CatalogPlugin):
             return AwsServicesSupportInLatest.SUPPORTED
         if operation_name in self.services_in_latest[service_name][self.current_emulator_type]:
             return AwsServiceOperationsSupportInLatest.SUPPORTED
-        for emulator_type in self.services_in_latest[service_name].keys():
+        for emulator_type in self.services_in_latest[service_name]:
             if emulator_type is self.current_emulator_type:
                 continue
             if operation_name in self.services_in_latest[service_name][emulator_type]:
@@ -137,4 +137,4 @@ class AwsCatalogPlugin(CatalogPlugin):
             return CloudFormationResourcesSupportInLatest.NOT_SUPPORTED
         if service_name in self.services_in_latest:
             return self.get_aws_service_status(service_name, operation_name=None)
-        return AwsServiceOperationsSupportInLatest.NOT_SUPPORTED
+        return AwsServicesSupportInLatest.NOT_SUPPORTED

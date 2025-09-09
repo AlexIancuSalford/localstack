@@ -136,6 +136,8 @@ ADD bin/localstack bin/localstack.bat bin/localstack-supervisor bin/
 # add the code as late as possible
 ADD localstack-core/ /opt/code/localstack/localstack-core
 
+COPY .git /opt/code/localstack/.git
+
 # Install LocalStack Community and generate the version file while doing so
 RUN --mount=type=cache,target=/root/.cache \
     . .venv/bin/activate && \

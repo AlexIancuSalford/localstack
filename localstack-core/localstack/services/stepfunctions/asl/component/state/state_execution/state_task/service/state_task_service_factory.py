@@ -28,6 +28,9 @@ from localstack.services.stepfunctions.asl.component.state.state_execution.state
 from localstack.services.stepfunctions.asl.component.state.state_execution.state_task.service.state_task_service_glue import (
     StateTaskServiceGlue,
 )
+from localstack.services.stepfunctions.asl.component.state.state_execution.state_task.service.state_task_service_http import (
+    StateTaskServiceHttp,
+)
 from localstack.services.stepfunctions.asl.component.state.state_execution.state_task.service.state_task_service_lambda import (
     StateTaskServiceLambda,
 )
@@ -83,6 +86,8 @@ def state_task_service_for(service_name: str) -> StateTaskService:
             return StateTaskServiceGlue()
         case "batch":
             return StateTaskServiceBatch()
+        case "http":
+            return StateTaskServiceHttp()
         case _ if service_name in _UNSUPPORTED_SERVICE_NAMES:
             return StateTaskServiceUnsupported()
         case unknown:

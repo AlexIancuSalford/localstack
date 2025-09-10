@@ -14,6 +14,9 @@ from urllib.parse import urlencode
 import requests
 from requests.auth import HTTPBasicAuth
 
+from localstack.services.stepfunctions.asl.component.common.error_name.custom_error_name import (
+    CustomErrorName,
+)
 from localstack.aws.api.stepfunctions import (
     HistoryEventExecutionDataDetails,
     HistoryEventType,
@@ -93,6 +96,12 @@ class StateTaskServiceHttp(StateTask):
 
     def __init__(self):
         super().__init__()
+
+    def _custom_error(self, name: str) -> str:
+        # Ensure we never pass a name starting with 'States.' to CustomErrorName
+        if name.startswith("States."):
+            return name[len("States."):].lstrip(".")
+        return name
 
     def from_state_props(self, state_props: StateProps) -> None:
         super().from_state_props(state_props=state_props)
@@ -301,26 +310,28 @@ class StateTaskServiceHttp(StateTask):
         if isinstance(ex, requests.exceptions.RequestException):
             # Handle various requests exceptions
             if isinstance(ex, requests.exceptions.Timeout):
-                error_name = "States.Timeout"
-                error_message = "HTTP request timed out"
+                err = "Http.Timeout"
+                msg = "HTTP request timed out"
             elif isinstance(ex, requests.exceptions.ConnectionError):
-                error_name = "States.Http.ConnectionError"
-                error_message = f"Failed to connect to the server: {str(ex)}"
+                err = "Http.ConnectionError"
+                msg = f"Failed to connect: {str(ex)}"
             elif isinstance(ex, requests.exceptions.HTTPError):
-                error_name = "States.Http.HttpError"
-                error_message = f"HTTP error occurred: {str(ex)}"
+                err = "Http.HttpError"
+                msg = f"HTTP protocol error: {str(ex)}"
             else:
-                error_name = "States.Http.RequestFailed"
-                error_message = f"HTTP request failed: {str(ex)}"
+                err = "Http.RequestFailed"
+                msg = f"HTTP request failed: {str(ex)}"
+
+            err = self._custom_error(err)
 
             return FailureEvent(
                 env=env,
-                error_name=CustomErrorName(error_name=error_name),
+                error_name=CustomErrorName(error_name=err),
                 event_type=HistoryEventType.TaskFailed,
                 event_details=EventDetails(
                     taskFailedEventDetails=TaskFailedEventDetails(
-                        error=error_name,
-                        cause=error_message,
+                        error=err,
+                        cause=msg,
                         resource=self._get_sfn_resource(),
                         resourceType=self._get_sfn_resource_type(),
                     )
@@ -436,7 +447,7 @@ class StateTaskServiceHttp(StateTask):
             # Check for HTTP errors (4xx, 5xx)
             if not response.ok:
                 # For non-2xx status codes, we should fail the task
-                error_name = f"States.Http.{response.status_code}"
+                error_name = self._custom_error(f"Http.{response.status_code}")
                 error_message = f"HTTP request returned status code {response.status_code}"
 
                 raise FailureEventException(

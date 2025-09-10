@@ -5,7 +5,6 @@ This provides support for HTTP task states that can make HTTP/HTTPS requests to 
 This implementation inherits directly from StateTask instead of StateTaskService,
 avoiding unnecessary AWS service-specific logic.
 """
-import copy
 import json
 import logging
 from typing import Any, Dict, Final, Optional
@@ -13,6 +12,23 @@ from urllib.parse import urlencode
 
 import requests
 from requests.auth import HTTPBasicAuth
+
+# EventBridge integration imports
+from localstack.services.stepfunctions.asl.eval.callback.callback import CallbackEndpoint
+from localstack.services.stepfunctions.asl.utils.encoding import to_json_str
+from localstack.utils.strings import long_uid
+from localstack.utils.time import TIMESTAMP_FORMAT_TZ, timestamp
+from localstack.http import Request
+from localstack.services.events.models import events_stores
+from localstack.services.events.utils import format_event
+from localstack.utils.strings import long_uid
+from localstack.services.events.provider import EventsProvider
+from localstack.services.events.event_bus import EventBusService
+from localstack.services.stepfunctions.asl.eval.callback.callback import (
+    CallbackOutcomeSuccess,
+    CallbackOutcomeFailure,
+    CallbackOutcomeTimedOut
+)
 
 from localstack.services.stepfunctions.asl.component.common.error_name.custom_error_name import (
     CustomErrorName,
@@ -74,7 +90,13 @@ _SUPPORTED_API_PARAM_BINDINGS: Final[dict[str, set[str]]] = {
         "Authentication",  # Optional: Authentication configuration
         "ConnectionConfig", # Optional: Connection configuration (timeouts, etc.)
         "Transform",       # Optional: Enable/disable automatic JSON transformation
+        "EventBridge",     # Optional: EventBridge integration configuration
     }
+}
+
+# Supported integration patterns
+_SUPPORTED_INTEGRATION_PATTERNS: Final[set[ResourceCondition]] = {
+    ResourceCondition.WaitForTaskToken,  # HTTP with EventBridge wait task token
 }
 
 # Default timeout values (in seconds)
@@ -116,11 +138,11 @@ class StateTaskServiceHttp(StateTask):
                 "Only 'invoke' is supported for HTTP tasks."
             )
 
-        # Validate that no unsupported integration patterns are used
-        if self.resource.condition:
+        # Validate integration patterns
+        if self.resource.condition and self.resource.condition not in _SUPPORTED_INTEGRATION_PATTERNS:
             raise ValueError(
                 f"HTTP tasks do not support the integration pattern '{self.resource.condition}'. "
-                "Only synchronous request-response pattern is supported."
+                f"Supported patterns: {list(_SUPPORTED_INTEGRATION_PATTERNS)} or synchronous."
             )
 
     def _get_supported_parameters(self) -> set[str] | None:
@@ -240,6 +262,124 @@ class StateTaskServiceHttp(StateTask):
             key_name = auth_config.get("KeyName", "X-API-Key")
             key_value = auth_config.get("KeyValue", "")
             headers[key_name] = key_value
+
+    def _send_eventbridge_event(
+        self,
+        env: Environment,
+        eventbridge_config: Dict[str, Any],
+        http_request_details: Dict[str, Any],
+        task_token: Optional[str] = None
+    ) -> None:
+        """Send an event to EventBridge with HTTP request details and optional task token."""
+        try:
+            # Get the events store for the current account and region
+            account_id = env.aws_execution_details.account
+            region = env.aws_execution_details.region
+            store = events_stores[account_id][region]
+            
+            # Get EventBridge configuration
+            source = eventbridge_config.get("Source", "http.stepfunctions")
+            detail_type = eventbridge_config.get("DetailType", "HTTP Task Event")
+            event_bus_name = eventbridge_config.get("EventBusName", "default")
+            
+            # Build event detail
+            event_detail = {
+                "httpRequest": http_request_details,
+                "executionArn": env.states.context_object.context_object_data["Execution"]["Id"],
+                "stateMachineArn": env.states.context_object.context_object_data["StateMachine"]["Id"],
+                "timestamp": timestamp(format=TIMESTAMP_FORMAT_TZ)
+            }
+            
+            # Add custom detail from EventBridge config
+            if "Detail" in eventbridge_config:
+                if isinstance(eventbridge_config["Detail"], dict):
+                    event_detail.update(eventbridge_config["Detail"])
+                else:
+                    event_detail["customDetail"] = eventbridge_config["Detail"]
+            
+            # Add task token if provided (for wait task token pattern)
+            if task_token:
+                event_detail["taskToken"] = task_token
+            
+            event_entry = {
+                "Source": source,
+                "DetailType": detail_type,
+                "Detail": json.dumps(event_detail),
+                "EventBusName": event_bus_name,
+                "Time": timestamp(format=TIMESTAMP_FORMAT_TZ)
+            }
+            
+            # Format the event using LocalStack's internal formatting
+            formatted_event = format_event(
+                event_entry,
+                region=region,
+                account_id=account_id,
+                event_bus_name=event_bus_name
+            )
+            
+            # Get the event bus
+            event_bus = store.event_buses.get(event_bus_name, store.event_buses.get("default"))
+            if not event_bus:
+                LOG.warning(f"Event bus '{event_bus_name}' not found, creating default")
+
+                event_bus_service = EventBusService.create_event_bus_service(
+                    "default", region, account_id, None, None, None
+                )
+                store.event_buses["default"] = event_bus_service.event_bus
+                event_bus = event_bus_service.event_bus
+
+            events_provider = EventsProvider()
+            
+            # Use the internal method to process the formatted event
+            if hasattr(events_provider, '_process_rules'):
+                # Try to use the internal rule processing
+                if configured_rules := list(event_bus.rules.values()):
+                    for rule in configured_rules:
+                        events_provider._process_rules(
+                            rule=rule,
+                            region=region,
+                            account_id=account_id,
+                            event_formatted=formatted_event,
+                            trace_header=None  # No trace header for internal events
+                        )
+            
+            LOG.info(f"Sent HTTP task event to EventBridge: {source}")
+            
+        except Exception as e:
+            LOG.error(f"Failed to send event to EventBridge: {e}")
+            # For debugging, let's not raise the exception to see if HTTP task continues
+            LOG.warning(f"Continuing HTTP task execution despite EventBridge error: {e}")
+    
+    def _wait_for_callback(
+        self,
+        env: Environment,
+        task_token: str,
+        timeout_seconds: int
+    ) -> Dict[str, Any]:
+        """Wait for EventBridge callback with task token."""
+        # Get the callback endpoint from the callback pool manager
+        callback_endpoint = env.callback_pool_manager.get(task_token)
+        
+        if not callback_endpoint:
+            raise ValueError(f"No callback endpoint found for task token: {task_token}")
+        
+        # Wait for callback outcome
+        outcome = callback_endpoint.wait(timeout=timeout_seconds)
+        
+        if outcome is None:
+            raise Exception("Task timed out waiting for EventBridge callback")
+        
+        if isinstance(outcome, CallbackOutcomeSuccess):
+            return json.loads(outcome.output)
+        elif isinstance(outcome, CallbackOutcomeFailure):
+            error_msg = f"EventBridge callback failed: {outcome.error}"
+            if outcome.cause:
+                error_msg += f" - {outcome.cause}"
+            raise Exception(error_msg)
+        elif isinstance(outcome, CallbackOutcomeTimedOut):
+            raise Exception("EventBridge callback timed out")
+        else:
+            raise Exception(f"Unknown callback outcome type: {type(outcome)}")
 
     def _parse_response_body(self, response: requests.Response, transform: bool = True) -> Any:
         """
@@ -363,7 +503,7 @@ class StateTaskServiceHttp(StateTask):
         state_credentials: StateCredentials,
     ) -> None:
         """
-        Execute the HTTP task.
+        Execute the HTTP task with optional EventBridge integration.
 
         Args:
             env: The execution environment
@@ -374,7 +514,8 @@ class StateTaskServiceHttp(StateTask):
         # Extract parameters
         method = parameters.get("Method", "GET").upper()
         url = parameters.get("Url")
-
+        eventbridge_config = parameters.get("EventBridge")
+        
         if not url:
             raise FailureEventException(
                 failure_event=FailureEvent(
@@ -399,6 +540,30 @@ class StateTaskServiceHttp(StateTask):
         auth_config = parameters.get("Authentication")
         connection_config = parameters.get("ConnectionConfig", {})
         transform = parameters.get("Transform", True)
+        
+        # Check if this is a wait task token pattern
+        is_wait_task_token = self.resource.condition == ResourceCondition.WaitForTaskToken
+        task_token = None
+        
+        if is_wait_task_token:
+            # Get task token from context for waitForTaskToken pattern
+            task_token = env.states.context_object.context_object_data.get("Task", {}).get("Token")
+            if not task_token:
+                raise FailureEventException(
+                    failure_event=FailureEvent(
+                        env=env,
+                        error_name=StatesErrorName(typ=StatesErrorNameType.StatesTaskFailed),
+                        event_type=HistoryEventType.TaskFailed,
+                        event_details=EventDetails(
+                            taskFailedEventDetails=TaskFailedEventDetails(
+                                error="States.Http.NoTaskToken",
+                                cause="Task token is required for waitForTaskToken pattern",
+                                resource=self._get_sfn_resource(),
+                                resourceType=self._get_sfn_resource_type(),
+                            )
+                        ),
+                    )
+                )
 
         # Build complete URL
         full_url = self._build_url(url, query_parameters)
@@ -429,6 +594,30 @@ class StateTaskServiceHttp(StateTask):
                     request_headers["Content-Type"] = "application/json"
             else:
                 request_data = str(request_body)
+        
+        # Send EventBridge event if configured (before HTTP request)
+        if eventbridge_config:
+            http_request_details = {
+                "method": method,
+                "url": full_url,
+                "headers": dict(request_headers),
+                "body": request_json if request_json else request_data,
+                "timestamp": timestamp(format=TIMESTAMP_FORMAT_TZ)
+            }
+            
+            self._send_eventbridge_event(
+                env=env,
+                eventbridge_config=eventbridge_config,
+                http_request_details=http_request_details,
+                task_token=task_token
+            )
+            
+            # If this is a wait task token pattern, wait for callback instead of making HTTP request
+            if is_wait_task_token:
+                callback_timeout = connection_config.get("CallbackTimeout", 300)  # 5 minutes default
+                callback_result = self._wait_for_callback(env, task_token, callback_timeout)
+                env.stack.append(callback_result)
+                return
 
         try:
             # Make the HTTP request
@@ -567,41 +756,52 @@ class StateTaskServiceHttp(StateTask):
         Main execution method for the HTTP task.
 
         This overrides the ExecutionState's _eval_execution to implement
-        HTTP-specific task execution logic.
+        HTTP-specific task execution logic with EventBridge integration.
         """
-        # Evaluate the resource to get runtime information
-        self.resource.eval(env=env)
-        resource_runtime_part: ResourceRuntimePart = env.stack.pop()
+        # Handle wait task token pattern for EventBridge integration
+        if self.resource.condition == ResourceCondition.WaitForTaskToken:
+            # Generate a TaskToken uuid within the context object for callback
+            task_token = env.states.context_object.update_task_token()
+            env.callback_pool_manager.add(task_token)
+            
+        try:
+            # Evaluate the resource to get runtime information
+            self.resource.eval(env=env)
+            resource_runtime_part: ResourceRuntimePart = env.stack.pop()
 
-        # Get parameters and credentials
-        parameters = self._eval_parameters(env=env)
-        state_credentials = self._eval_state_credentials(env=env)
+            # Get parameters and credentials
+            parameters = self._eval_parameters(env=env)
+            state_credentials = self._eval_state_credentials(env=env)
 
-        # Add pre-execution events
-        self._before_eval_execution(
-            env=env,
-            resource_runtime_part=resource_runtime_part,
-            parameters=parameters,
-            state_credentials=state_credentials,
-        )
-
-        # Check if we're in mocked mode
-        if env.is_mocked_mode():
-            mocked_response: MockedResponse = env.get_current_mocked_response()
-            eval_mocked_response(env=env, mocked_response=mocked_response)
-        else:
-            # Execute the actual HTTP task
-            self._eval_http_task(
+            # Add pre-execution events
+            self._before_eval_execution(
                 env=env,
                 resource_runtime_part=resource_runtime_part,
                 parameters=parameters,
                 state_credentials=state_credentials,
             )
 
-        # Add post-execution events
-        self._after_eval_execution(
-            env=env,
-            resource_runtime_part=resource_runtime_part,
-            parameters=parameters,
-            state_credentials=state_credentials,
-        )
+            # Check if we're in mocked mode
+            if env.is_mocked_mode():
+                mocked_response: MockedResponse = env.get_current_mocked_response()
+                eval_mocked_response(env=env, mocked_response=mocked_response)
+            else:
+                # Execute the actual HTTP task
+                self._eval_http_task(
+                    env=env,
+                    resource_runtime_part=resource_runtime_part,
+                    parameters=parameters,
+                    state_credentials=state_credentials,
+                )
+
+            # Add post-execution events
+            self._after_eval_execution(
+                env=env,
+                resource_runtime_part=resource_runtime_part,
+                parameters=parameters,
+                state_credentials=state_credentials,
+            )
+            
+        finally:
+            # Ensure the TaskToken field is reset after execution
+            env.states.context_object.context_object_data.pop("Task", None)
